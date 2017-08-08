@@ -1,0 +1,1 @@
+This is a demo implementation of Designing Effective Inter-Pixel Information Flow for Natural Image Matting based on python3.5.
