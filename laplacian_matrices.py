@@ -4,7 +4,12 @@ from PIL import Image
 import PIL.ImageFilter as ftr
 from numpy.matlib import repmat
 from scipy.sparse import csr_matrix
+from scipy.sparse import coo_matrix
+from scipy.sparse import csc_matrix
 from scipy.spatial import cKDTree
+import sklearn.neighbors
+from scipy import ndimage
+from numpy.lib.stride_tricks import as_strided
 
 #from compiler.ast import flatten
 
@@ -43,7 +48,11 @@ def localRGBnormalDistributions(image, windowRadius=1, epsilon=1e-8):
     windowSize = 2 * windowRadius + 1
 
     #meanImage = imboxfilt(image, windowSize)
-    meanImage = boxfilter(image, windowSize)
+    #meanImage = boxfilter(image, windowSize)
+    meanImage = np.zeros(image.shape)
+    meanImage[:,:,0] = ndimage.uniform_filter(image[:,:,0], windowSize)
+    meanImage[:, :, 1] = ndimage.uniform_filter(image[:, :, 1], windowSize)
+    meanImage[:, :, 2] = ndimage.uniform_filter(image[:, :, 2], windowSize)
     # temp_image=image*255
     # meanImage= Image.fromarray(temp_image.astype(np.uint8)).filter(ftr.Kernel((3,3),(1,1,1,1,1,1,1,1,1),9))
     # meanImage=np.array(meanImage)
@@ -54,7 +63,7 @@ def localRGBnormalDistributions(image, windowRadius=1, epsilon=1e-8):
             # temp_image = image[:,:,r]*image[:,:,c]*255
             # temp_image = Image.fromarray(temp_image.astype(np.uint8)).filter(ftr.Kernel((3, 3), (1, 1, 1, 1, 1, 1, 1, 1, 1), 1/9))
             # temp = np.array(temp_image)-meanImage[:,:,r]*meanImage[:,:,c]
-            temp=boxfilter(image[:,:,r]*image[:,:,c],windowSize)-meanImage[:,:, r]*meanImage[:,:, c]
+            temp=ndimage.uniform_filter(image[:,:,r]*image[:,:,c],windowSize)-meanImage[:,:, r]*meanImage[:,:, c]
             #temp = imboxfilt(image(:,:, r).*image(:,:, c), windowSize) - meanImage(:,:, r).*meanImage(:,:, c)
             covarMat[r,c,:] = temp.T.flatten()
 
@@ -66,17 +75,32 @@ def localRGBnormalDistributions(image, windowRadius=1, epsilon=1e-8):
             covarMat[r,c,:] = covarMat[c,r,:]
     return meanImage,covarMat
 
-def im2col(indices,windowSize):
-    m,n=indices.shape
-    num=(m-2)*(n-2)
-    neighInd=np.zeros(windowSize*windowSize*num).reshape(windowSize*windowSize,num)
-    for i in range(0,num):
-        first=i%(m-2)
-        second=i//(m-2)
-        for j in range(0,windowSize):
-            for k in range(0,windowSize):
-                neighInd[j*windowSize+k,i]=indices[first+j,second+k]
-    return neighInd
+# def im2col(indices,windowSize):
+#     m,n=indices.shape
+#     num=(m-2)*(n-2)
+#     neighInd=np.zeros(windowSize*windowSize*num).reshape(windowSize*windowSize,num)
+#     for i in range(0,num):
+#         first=i%(m-2)
+#         second=i//(m-2)
+#         for j in range(0,windowSize):
+#             for k in range(0,windowSize):
+#                 neighInd[j*windowSize+k,i]=indices[first+j,second+k]
+#     return neighInd
+
+def im2col(indices, windowSize, stepsize=1):
+    # Parameters
+    M,N = indices.shape
+    col_extent = N - windowSize + 1
+    row_extent = M - windowSize + 1
+
+    # Get Starting block indices
+    start_idx = np.arange(windowSize)[:,None]*N + np.arange(windowSize)
+
+    # Get offsetted indices across the height and width of input array
+    offset_idx = np.arange(row_extent)[:,None]*N + np.arange(col_extent)
+
+    # Get all actual indices & index into input array for final output
+    return np.take (indices,start_idx.T.ravel()[:,None] + offset_idx.T.ravel()[::stepsize])
 
 def localMattingAffinity(image,inMap,windowRadius=1,epsilon=1e-7):
     windowSize=windowRadius*2+1
@@ -86,7 +110,7 @@ def localMattingAffinity(image,inMap,windowRadius=1,epsilon=1e-7):
     epsilon = epsilon / neighSize
 
 
-    meanImage, covarMat = localRGBnormalDistributions(image, windowRadius, epsilon)
+    # meanImage, covarMat = localRGBnormalDistributions(image, windowRadius, epsilon)
 
     # Determine pixels and their local neighbors
     indices = np.reshape(range(0, h * w), (w,h)).T
@@ -94,26 +118,19 @@ def localMattingAffinity(image,inMap,windowRadius=1,epsilon=1e-7):
     neighInd=neighInd.T
 
     inMap = inMap[windowRadius:h- windowRadius,windowRadius:w-windowRadius]
-    np.delete(inMap,[0,h-1],axis=0)
-    np.delete(inMap,[0,w-1], axis=1)
+    # np.delete(inMap,[0,h-1],axis=0)
+    # np.delete(inMap,[0,w-1], axis=1)
     inMap=inMap.T.flatten()
     #neighInd = neighInd(inMap,:);
-    neighInd=np.array([neighInd[i,:] for i in range(len(inMap)) if inMap[i]==1])
+    neighInd = neighInd[inMap==1,:]
+    #neighInd=np.array([neighInd[i,:] for i in range(len(inMap)) if inMap[i]==1])
     #inInd = neighInd(:, (neighSize + 1) / 2);
     inInd=neighInd[:,np.int((neighSize + 1) / 2)]
     pixCnt = len(inInd)
 
     # Prepare in & out data
-    image2=np.zeros((w,h,c))
-    image2[:,:,0]=image[:,:,0].T
-    image2[:, :, 1] = image[:, :, 1].T
-    image2[:, :, 2] = image[:, :, 2].T
-    image = np.reshape(image2, (N,c))
-    meanImage2 = np.zeros((w, h, c))
-    meanImage2[:, :, 0] = meanImage[:, :, 0].T
-    meanImage2[:, :, 1] = meanImage[:, :, 1].T
-    meanImage2[:, :, 2] = meanImage[:, :, 2].T
-    meanImage = np.reshape(meanImage2, (N, c))
+    image = image.reshape(N,c,order='F')
+    # meanImage = meanImage.reshape(N, c,order='F')
     flowRows = np.zeros((neighSize, neighSize, pixCnt))
     flowCols = np.zeros((neighSize, neighSize, pixCnt))
     flows = np.zeros((neighSize, neighSize, pixCnt))
@@ -122,8 +139,16 @@ def localMattingAffinity(image,inMap,windowRadius=1,epsilon=1e-7):
     for i in range(0,len(inInd)):
         neighs = neighInd[i,:]
         #shiftedWinColors = image(neighs,:) - repmat(meanImage(inInd(i),:), [size(neighs, 2), 1])
-        shiftedWinColors = np.array([image[np.int(j),:] for j in neighs]) - repmat(meanImage[np.int(inInd[i]),:], len(neighs), 1)
-        flows[:,:,i] = np.dot(shiftedWinColors ,np.dot(np.linalg.inv(covarMat[:,:,np.int(inInd[i])]),shiftedWinColors.T))
+        # shiftedWinColors = np.array([image[np.int(j),:] for j in neighs]) - repmat(meanImage[np.int(inInd[i]),:], len(neighs), 1)
+
+        # shiftedWinColors = image[neighs,:] - repmat(meanImage[np.int(inInd[i]), :],len(neighs), 1)
+        # flows[:,:,i] = np.dot(shiftedWinColors ,np.dot(np.linalg.inv(covarMat[:,:,np.int(inInd[i])]),shiftedWinColors.T))
+        shiftedWinColors = image[neighs, :] - repmat(np.mean(image[neighs, :],0), len(neighs), 1)
+        winI=image[neighs, :]
+        win_mu=np.mean(winI,0)
+        covarMat=winI.T.dot(winI)/neighSize-win_mu.dot(win_mu.T) +epsilon/neighSize*np.eye(c)
+        flows[:, :, i] = np.dot(shiftedWinColors,np.dot(np.linalg.inv(covarMat), shiftedWinColors.T))
+
         neighs = repmat(neighs, len(neighs), 1)
         flowRows[:,:,i] = neighs
         flowCols[:,:,i] = neighs.T
@@ -135,7 +160,7 @@ def localMattingAffinity(image,inMap,windowRadius=1,epsilon=1e-7):
     flowRows=flowRows.flatten()
     flowCols=flowCols.flatten()
     flows=flows.flatten()
-    W=csr_matrix((flows, (flowRows, flowCols)), shape=(N, N))
+    W=csc_matrix((flows, (flowRows, flowCols)), shape=(N, N))
     # for i in range(len(flows)):
     #     W[flowRows[i],flowCols[i]]=flows[i]
 
@@ -144,15 +169,55 @@ def localMattingAffinity(image,inMap,windowRadius=1,epsilon=1e-7):
 
     # Normalize
     #sumW = full(sum(W, 2));
-    sumW=W.sum(1)
-    #sumW(sumW < 0.05) = 1;
-    tmp=[i for i in range(len(sumW)) if sumW[i]<0.05]
-    for i in tmp:
-        sumW[i]=1
+    sumW=W.sum(axis=1)
+    sumW=np.array(sumW)
+    sumW[sumW < 0.05] = 1
+    # tmp=[i for i in range(len(sumW)) if sumW[i]<0.05]
+    # for i in tmp:
+    #     sumW[i]=1
     #W = spdiags(1. / sumW(:), 0, N, N) *W;
     #W=np.dot(sp.sparse.diags(np.array(1/sumW).flatten(),0),W)
-    W = sp.sparse.diags(np.array(1 / sumW).flatten(), 0)* W
+    W = sp.sparse.diags(np.array(1 / sumW).flatten(), 0).dot(W)
     return W
+
+def rolling_block(A, block=(3, 3)):
+    shape = (A.shape[0] - block[0] + 1, A.shape[1] - block[1] + 1) + block
+    strides = (A.strides[0], A.strides[1]) + A.strides
+    return as_strided(A, shape=shape, strides=strides)
+
+# Returns sparse matting laplacian
+def computeLaplacian(img, eps=10**(-7), win_rad=1):
+    win_size = (win_rad*2+1)**2
+    h, w, d = img.shape
+    # Number of window centre indices in h, w axes
+    c_h, c_w = h - win_rad - 1, w - win_rad - 1
+    win_diam = win_rad*2+1
+
+    indsM = np.arange(h*w).reshape((w, h),order='F')
+    # image2 = np.zeros((w, h, d))
+    # image2[:, :, 0] = img[:, :, 0].T
+    # image2[:, :, 1] = img[:, :, 1].T
+    # image2[:, :, 2] = img[:, :, 2].T
+    #img = np.reshape(image2, (h*w, d))
+    ravelImg = img.reshape(h*w,d,order='F')
+    win_inds = rolling_block(indsM, block=(win_diam, win_diam))
+
+    win_inds = win_inds.reshape(c_h, c_w, win_size)
+    winI = ravelImg[win_inds]
+
+    win_mu = np.mean(winI, axis=2, keepdims=True)
+    win_var = np.einsum('...ji,...jk ->...ik', winI, winI)/win_size - np.einsum('...ji,...jk ->...ik', win_mu, win_mu)
+
+    inv = np.linalg.inv(win_var + (eps/win_size)*np.eye(3))
+
+    X = np.einsum('...ij,...jk->...ik', winI - win_mu, inv)
+    vals = np.eye(win_size) - (1/win_size)*(1 + np.einsum('...ij,...kj->...ik', X, winI - win_mu))
+
+    nz_indsCol = np.tile(win_inds, win_size).ravel()
+    nz_indsRow = np.repeat(win_inds, win_size).ravel()
+    nz_indsVal = vals.ravel()
+    L = sp.sparse.csc_matrix((nz_indsVal, (nz_indsRow, nz_indsCol)), shape=(h*w, h*w))
+    return L
 
 def getDist(dataSet, Sample):
     return np.sum(np.power(dataSet - Sample, 2))
@@ -195,6 +260,64 @@ def findNonlocalNeighbors(image, K, xyWeight, inMap, outMap, eraseSelfMatches=1)
     h, w, c = image.shape
     N=h*w
 
+    # image2=np.zeros((w,h,c))
+    # image2[:,:,0]=image[:,:,0].T
+    # image2[:, :, 1] = image[:, :, 1].T
+    # image2[:, :, 2] = image[:, :, 2].T
+    features = np.reshape(image, (h * w, c),order='F')
+    if xyWeight > 0:
+        [x, y] = np.meshgrid(np.arange(w),np.arange(h))
+        #x= [[float(i) for i in inner] for inner in x]
+        #y = [[float(i) for i in inner] for inner in y]
+        x = xyWeight * x / (h-1)
+        y = xyWeight * y / (w-1)
+        #features = [features x(:) y(:)]
+        x=np.reshape(x.T,(h*w,1))
+        y = np.reshape(y.T, (h * w, 1))
+        features=np.column_stack((features,x,y))
+
+    inMap = inMap.T.flatten()
+    outMap = outMap.T.flatten()
+    indices = np.arange(h*w)
+    inInd = [indices[i] for i in range(len(inMap)) if inMap[i]==1]
+    outInd = [indices[i] for i in range(len(outMap)) if outMap[i]==1]
+
+    if eraseSelfMatches:
+        # Find K + 1 matches to count for self - matches
+        #neighbors = knnsearch([features[i,:] for i in range(0,N) if outMap[i]!=0], [features[i,:] for i in range(0,N) if inMap[i]!=0], K + 1)
+
+        # print('         Buiding kdTree...')
+        # tree = cKDTree(np.array([features[i,:] for i in range(0,N) if outMap[i]!=0]))
+        # print('         Quering kdTree...')
+        # d, neighbors = tree.query(np.array([features[i,:] for i in range(0,N) if inMap[i]!=0]), k=K+1, p=np.inf, eps=0.0)
+
+        nbrs = sklearn.neighbors.NearestNeighbors(n_neighbors=K+1, n_jobs=4).fit(np.array([features[i,:] for i in range(0,N) if outMap[i]!=0]))
+        neighbors = nbrs.kneighbors(np.array([features[i,:] for i in range(0,N) if inMap[i]!=0]))[1]
+
+        # Get rid of self - matches
+        validNeighMap = np.ones(neighbors.shape)
+        #validNeighMap(inMap(inInd) & outMap(inInd), 1) = 0
+        validNeighMap[[i for i in range(len(inInd)) if inMap[inInd[i]]==1 and outMap[inInd[i]]==1], 0] = 0
+        validNeighMap[:, -1] = 1-validNeighMap[:, 0]
+        validNeighbors = np.zeros((neighbors.shape[0], neighbors.shape[1] - 1))
+        for i in range(validNeighbors.shape[0]):
+            validNeighbors[i,:] = neighbors[i, [j for j in range(validNeighMap.shape[1]) if validNeighMap[i,j]==1]]
+        #neighInd = outInd[validNeighbors]
+        neighInd = [[outInd[int(i)] for i in inn] for inn in validNeighbors]
+    else:
+        #neighbors = knnsearch([features[i, :] for i in range(0, N) if outMap[i] != 0], [features[i, :] for i in range(0, N) if inMap[i] != 0], K)
+        print('         Buiding kdTree...')
+        tree = cKDTree(np.array([features[i, :] for i in range(0, N) if outMap[i] != 0]))
+        print('         Quering kdTree...')
+        d, neighbors = tree.query(np.array([features[i, :] for i in range(0, N) if inMap[i] != 0]), k=K, p=np.inf,eps=0.0)
+        #neighInd = outInd[neighbors]
+        neighInd = [[outInd[int(i)] for i in inn] for inn in neighbors]
+    return inInd, neighInd, features
+
+def findNonlocalNeighborsKU(image, K, xyWeight, inMap, outMap, eraseSelfMatches=1):
+    h, w, c = image.shape
+    N=h*w
+
     image2=np.zeros((w,h,c))
     image2[:,:,0]=image[:,:,0].T
     image2[:, :, 1] = image[:, :, 1].T
@@ -220,8 +343,17 @@ def findNonlocalNeighbors(image, K, xyWeight, inMap, outMap, eraseSelfMatches=1)
     if eraseSelfMatches:
         # Find K + 1 matches to count for self - matches
         #neighbors = knnsearch([features[i,:] for i in range(0,N) if outMap[i]!=0], [features[i,:] for i in range(0,N) if inMap[i]!=0], K + 1)
-        tree = cKDTree(np.array([features[i,:] for i in range(0,N) if outMap[i]!=0]))
-        d, neighbors = tree.query(np.array([features[i,:] for i in range(0,N) if inMap[i]!=0]), k=K+1, p=np.inf, eps=0.0)
+
+        print('         Buiding kdTree...')
+        # tree = cKDTree(np.array([features[i,:] for i in range(0,N) if outMap[i]!=0]))
+        tree= sklearn.neighbors.KDTree(features[outMap==1,:])
+        print('         Quering kdTree...')
+        # d, neighbors = tree.query(np.array([features[i,:] for i in range(0,N) if inMap[i]!=0]), k=K+1, p=np.inf, eps=0.0)
+        dist, neighbors = tree.query(features[inMap==1,:], k=K+1)
+
+        # nbrs = sklearn.neighbors.NearestNeighbors(n_neighbors=K+1, n_jobs=4).fit(np.array([features[i,:] for i in range(0,N) if outMap[i]!=0]))
+        # neighbors = nbrs.kneighbors(np.array([features[i,:] for i in range(0,N) if inMap[i]!=0]))[1]
+
         # Get rid of self - matches
         validNeighMap = np.ones(neighbors.shape)
         #validNeighMap(inMap(inInd) & outMap(inInd), 1) = 0
@@ -234,7 +366,9 @@ def findNonlocalNeighbors(image, K, xyWeight, inMap, outMap, eraseSelfMatches=1)
         neighInd = [[outInd[int(i)] for i in inn] for inn in validNeighbors]
     else:
         #neighbors = knnsearch([features[i, :] for i in range(0, N) if outMap[i] != 0], [features[i, :] for i in range(0, N) if inMap[i] != 0], K)
+        print('         Buiding kdTree...')
         tree = cKDTree(np.array([features[i, :] for i in range(0, N) if outMap[i] != 0]))
+        print('         Quering kdTree...')
         d, neighbors = tree.query(np.array([features[i, :] for i in range(0, N) if inMap[i] != 0]), k=K, p=np.inf,eps=0.0)
         #neighInd = outInd[neighbors]
         neighInd = [[outInd[int(i)] for i in inn] for inn in neighbors]
@@ -286,7 +420,7 @@ def colorMixtureAffinities(image, K, inMap, outMap, xyWeight=1, useXYinLLEcomp=0
     neighInd=neighInd.flatten()
     flows=flows.flatten()
     #Wcm = csr_matrix((flows, (inInd, neighInd)), shape=(N, N)).toarray()
-    Wcm = csr_matrix((flows, (inInd, neighInd)), shape=(N, N))
+    Wcm = csc_matrix((flows, (inInd, neighInd)), shape=(N, N))
     # for i in range(len(inInd)):
     #     Wcm[inInd[i],neighInd[i]]=flows[i]
 
@@ -310,13 +444,13 @@ def colorSimilarityAffinities(image, K, inMap, outMap, xyWeight=0.05, useHSV=0):
     inInd=inInd.T.flatten().reshape((inInd.shape[0]*inInd.shape[1]))
     neighInd=neighInd.T.flatten().reshape((neighInd.shape[0]*neighInd.shape[1]))
     #flows = max(1 - sum(abs(features(inInd(:), :) - features(neighInd(:), :)), 2) / size(features, 2), 0);
-    flows=np.maximum( 1-np.sum((features[inInd,:].reshape(len(inInd),5)-features[neighInd,:].reshape(len(inInd),5)).__abs__(),axis=1)/features.shape[1] ,0)
+    flows=np.maximum( 1-np.sum((features[inInd,:]-features[neighInd,:]).__abs__(),axis=1)/features.shape[1] ,0)
     #Wcs = sparse(inInd(:), neighInd(:), flows, N, N);
     # Wcs = np.zeros((N, N))
     # for i in range(len(inInd)):
     #     Wcs[inInd[i],neighInd[i]]=flows[i]
     flows=flows.reshape(len(flows))
-    Wcs = csr_matrix((flows, (inInd, neighInd)), shape=(N, N))
+    Wcs = csc_matrix((flows, (inInd, neighInd)), shape=(N, N))
     Wcs = (Wcs + Wcs.T) / 2 # If p is a neighbor of q, make q a neighbor of p
     return Wcs
 
@@ -346,20 +480,24 @@ def knownToUnknownColorMixture(image, trimap, K=1, xyWeight=10):
 
     # Estimated alpha is the sum of weights of FG neighbors
     alphaEst = trimap
+    # alphaEst=np.zeros(trimap.shape)
     #alphaEst.T[unk==1] = np.sum(flows[:, :K], axis=1)
     tmp=np.sum(flows[:, :K], axis=1)
-    index=0
-    for j in range(h):
-        for i in range(w):
-            if unk[i,j]==1:
-                alphaEst[i,j]=tmp[index]
-                index=index+1
+    # tmp=np.maximum(tmp,0)
+    # tmp = np.minimum(tmp, 1)
+    alphaEst.T[unk.T==1] = tmp
+    # index=0
+    # for j in range(0,h):
+    #     for i in range(0,w):
+    #         if unk[i,j]==1:
+    #             alphaEst[i,j]=tmp[index]
+    #             index=index+1
 
     #Compute the confidence based on FG - BG color difference
     unConf = fgCols - bgCols
     unConf = np.sum(unConf * unConf, axis=1) / 3
     conf = np.double(np.logical_or(fg , bg))
-    conf[unk==1] = unConf
+    conf.T[unk.T==1] = unConf
 
     return alphaEst, conf
 

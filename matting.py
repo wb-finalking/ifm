@@ -1,6 +1,7 @@
 import matplotlib.image as mpimg  # mpimg 用于读取图片
 from ifm import *
 from PIL import Image
+import time
 
 class parameters:
     def __init__(self):
@@ -44,12 +45,21 @@ class parameters:
 params=parameters()
 #print(param.lamb)
 
-image=mpimg.imread('input2.png')
+
+image=mpimg.imread('input6.png')
 image=image[:,:,0:3]
-trimap=mpimg.imread('trimap2.png')
+trimap=mpimg.imread('trimap6.png')
 trimap=trimap[:,:,1].copy()
 
-alpha=informationFlowMatting(image, trimap, params)
+# params.useKnownToUnknown=0
+
+t0=time.clock()
+alpha = informationFlowMatting(image, trimap, params)
+print('time is',time.clock()-t0)
+# alpha=alpha.T.ravel()
+# alpha=alpha.reshape(image.shape[0], image.shape[1])
+
 alpha=alpha*255
 im=Image.fromarray(alpha.astype(np.uint8))
 im.show()
+im.save('result6.png')
