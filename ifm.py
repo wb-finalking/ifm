@@ -85,17 +85,20 @@ def solveForAlphas(Lap, trimap, lamb, usePCG, alphaHat, conf, aHatMult=0.1):
     N = h * w
     known = np.logical_or(trimap > 0.8 , trimap < 0.2)
     #A = lamb * np.diag(np.double(known.T.flatten()))
-    A = lamb * sp.sparse.diags(np.double(known.T.flatten()),0)
+    # A = lamb * sp.sparse.diags(known.T.flatten())
+    A = lamb * sp.sparse.diags(known.flatten().astype(np.float64))
+
     if len(alphaHat)!=0:
         conf[known==1] = 0
-        A = A + aHatMult * sp.sparse.diags(conf.T.flatten(),0)
-        b = A.dot(alphaHat.T.flatten().reshape(N,1))
+        A = A + aHatMult * sp.sparse.diags(conf.flatten())
+        b = A.dot(alphaHat.reshape(N,1))
     else:
-        b = A.dot(np.double(trimap.T.flatten()[:,None] > 0.8))
+        # b = A.dot(np.double(trimap.T.flatten()[:,None] > 0.8))
+        b = A.dot(np.double(trimap.reshape(N,1) > 0.8))
 
     A = A + Lap
 
-    x0=np.array(trimap.T).ravel()
+    # x0=np.array(trimap.T).ravel()
 
     #alphas = np.dot(np.linalg.inv(A) , b)
     # alphas = sp.sparse.linalg.spsolve(A,b)
@@ -109,6 +112,7 @@ def solveForAlphas(Lap, trimap, lamb, usePCG, alphaHat, conf, aHatMult=0.1):
     # M_inverse = sp.sparse.linalg.spilu(A)
     # M2 = sp.sparse.linalg.LinearOperator((N, N), M_inverse.solve)
     alphas,info = sp.sparse.linalg.cg(A, b,maxiter=2000)
+    # alphas = sp.sparse.linalg.spsolve(A, b)
 
     alphas[alphas < 0] = 0
     alphas[alphas > 1] = 1
@@ -172,6 +176,7 @@ def informationFlowMatting(image, trimap, params, suppressMessages=0):
 
     # Decide to use the K - to - U flow
     useKU = params.useKnownToUnknown > 0
+    # useKU= False
 
     if not suppressMessages:
         if useKU:
@@ -195,11 +200,13 @@ def informationFlowMatting(image, trimap, params, suppressMessages=0):
         print('     Computing color mixture flow...')
     Lap = affinityMatrixToLaplacian(colorMixtureAffinities(image, params.cm_K, unk, [], params.cm_xyw))
     Lap = params.cm_mult * np.dot(Lap.T, Lap)
+
     if (not suppressMessages):
         print('     Computing local matting Laplacian...')
+    # Lap = affinityMatrixToLaplacian(
+    #     localMattingAffinity(image, dilUnk, params.loc_win, params.loc_eps))
+    Lap=Lap + params.loc_mult * computeLaplacian(image)
 
-    # Lap= Lap + params.loc_mult * computeLaplacian(image)
-    Lap = Lap + params.loc_mult * affinityMatrixToLaplacian(localMattingAffinity(image, dilUnk, params.loc_win, params.loc_eps))
     if (not suppressMessages):
         print('     Computing intra-U flow...')
     Lap = Lap + params.iu_mult * affinityMatrixToLaplacian(colorSimilarityAffinities(image, params.iu_K, unk, unk, params.iu_xyw))
@@ -220,14 +227,15 @@ def informationFlowMatting(image, trimap, params, suppressMessages=0):
         if (not suppressMessages):
             print('     Solving for alphas...')
         alpha = solveForAlphas(Lap, trimap, params.lamb, params.usePCGtoSolve, kToU, kToUconf, params.ku_mult)
-        # alpha=kToU.T.flatten()
+        # alpha=kToU.flatten()
         # alpha = kToUconf.T.flatten()
     else:
         if (not suppressMessages):
             print('     Solving for alphas...')
         alpha = solveForAlphas(Lap, trimap, params.lamb, params.usePCGtoSolve,[],[])
 
-    alpha = alpha.reshape(image.shape[1], image.shape[0]).T
+    # alpha = alpha.reshape(image.shape[1], image.shape[0]).T
+    alpha = alpha.reshape(image.shape[0], image.shape[1])
 
     if params.mattePostTrim:
         alpha[edgeTrimmed < 0.2] = 0

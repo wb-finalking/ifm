@@ -193,13 +193,13 @@ def computeLaplacian(img, eps=10**(-7), win_rad=1):
     c_h, c_w = h - win_rad - 1, w - win_rad - 1
     win_diam = win_rad*2+1
 
-    indsM = np.arange(h*w).reshape((w, h),order='F')
+    indsM = np.arange(h*w).reshape((h, w))
     # image2 = np.zeros((w, h, d))
     # image2[:, :, 0] = img[:, :, 0].T
     # image2[:, :, 1] = img[:, :, 1].T
     # image2[:, :, 2] = img[:, :, 2].T
     #img = np.reshape(image2, (h*w, d))
-    ravelImg = img.reshape(h*w,d,order='F')
+    ravelImg = img.reshape(h*w, d)
     win_inds = rolling_block(indsM, block=(win_diam, win_diam))
 
     win_inds = win_inds.reshape(c_h, c_w, win_size)
@@ -218,6 +218,25 @@ def computeLaplacian(img, eps=10**(-7), win_rad=1):
     nz_indsVal = vals.ravel()
     L = sp.sparse.csc_matrix((nz_indsVal, (nz_indsRow, nz_indsCol)), shape=(h*w, h*w))
     return L
+
+def closed_form_matte(img, scribbled_img, mylambda=100):
+    h, w,c  = img.shape
+    # consts_map = (np.sum(abs(img - scribbled_img), axis=-1)>0.001).astype(np.float64)
+    consts_map = np.logical_or(scribbled_img > 0.8 , scribbled_img < 0.2).astype(np.float64)
+    #scribbled_img = rgb2gray(scribbled_img)
+
+    consts_vals = scribbled_img*consts_map
+
+    D_s = consts_map.ravel()
+    b_s = consts_vals.ravel()
+    print("Computing Matting Laplacian")
+    L = computeLaplacian(img)
+    sD_s = sp.sparse.diags(D_s)
+    print("Solving for alpha")
+    x = sp.sparse.linalg.spsolve(L + mylambda*sD_s, mylambda*b_s)
+    # x, info = sp.sparse.linalg.cg(L + mylambda*sD_s, mylambda*b_s, maxiter=2000)
+    alpha = np.minimum(np.maximum(x.reshape(h, w), 0), 1)
+    return alpha
 
 def getDist(dataSet, Sample):
     return np.sum(np.power(dataSet - Sample, 2))
@@ -264,20 +283,20 @@ def findNonlocalNeighbors(image, K, xyWeight, inMap, outMap, eraseSelfMatches=1)
     # image2[:,:,0]=image[:,:,0].T
     # image2[:, :, 1] = image[:, :, 1].T
     # image2[:, :, 2] = image[:, :, 2].T
-    features = np.reshape(image, (h * w, c),order='F')
+    features = np.reshape(image, (h * w, c))
     if xyWeight > 0:
         [x, y] = np.meshgrid(np.arange(w),np.arange(h))
         #x= [[float(i) for i in inner] for inner in x]
         #y = [[float(i) for i in inner] for inner in y]
-        x = xyWeight * x / (h-1)
-        y = xyWeight * y / (w-1)
+        x = xyWeight * (x+1) / (w)
+        y = xyWeight * (y+1) / (h)
         #features = [features x(:) y(:)]
-        x=np.reshape(x.T,(h*w,1))
-        y = np.reshape(y.T, (h * w, 1))
+        x = np.reshape(x, (h * w, 1))
+        y = np.reshape(y, (h * w, 1))
         features=np.column_stack((features,x,y))
 
-    inMap = inMap.T.flatten()
-    outMap = outMap.T.flatten()
+    inMap = inMap.ravel()
+    outMap = outMap.ravel()
     indices = np.arange(h*w)
     inInd = [indices[i] for i in range(len(inMap)) if inMap[i]==1]
     outInd = [indices[i] for i in range(len(outMap)) if outMap[i]==1]
@@ -416,9 +435,9 @@ def colorMixtureAffinities(image, K, inMap, outMap, xyWeight=1, useXYinLLEcomp=0
 
     #Wcm = sparse(inInd(:), neighInd(:), flows, N, N);
     #Wcm=np.zeros((N,N))
-    inInd=inInd.flatten()
-    neighInd=neighInd.flatten()
-    flows=flows.flatten()
+    inInd=inInd.ravel()
+    neighInd=neighInd.ravel()
+    flows=flows.ravel()
     #Wcm = csr_matrix((flows, (inInd, neighInd)), shape=(N, N)).toarray()
     Wcm = csc_matrix((flows, (inInd, neighInd)), shape=(N, N))
     # for i in range(len(inInd)):
@@ -454,7 +473,18 @@ def colorSimilarityAffinities(image, K, inMap, outMap, xyWeight=0.05, useHSV=0):
     Wcs = (Wcs + Wcs.T) / 2 # If p is a neighbor of q, make q a neighbor of p
     return Wcs
 
-def knownToUnknownColorMixture(image, trimap, K=1, xyWeight=10):
+def knownToUnknownColorMixture(image, trimap, K=7, xyWeight=10):
+    # Known-to-Unknown Information Flow
+    # This function implements the known - to - unknown information flow in
+    # Yagiz Aksoy, Tunc Ozan Aydin, Marc Pollefeys, "Designing Effective
+    # Inter - Pixel Information Flow for Natural Image Matting", CVPR, 2017.
+    # All parameters other than image and the trimap are optional.The outputs
+    # are the weight of FG pixels inside the unknown region, and the confidence
+    # on these estimated values.
+    # - K defines the number of neighbors found in FG and BG from which
+    #   LLE weights are computed.
+    # - xyWeight determines how much importance is given to the spatial
+    #   coordinates in the nearest neighbor selection.
     bg = trimap < 0.2
     fg = trimap > 0.8
     unk = np.logical_not(np.logical_or(bg , fg))
@@ -485,7 +515,7 @@ def knownToUnknownColorMixture(image, trimap, K=1, xyWeight=10):
     tmp=np.sum(flows[:, :K], axis=1)
     # tmp=np.maximum(tmp,0)
     # tmp = np.minimum(tmp, 1)
-    alphaEst.T[unk.T==1] = tmp
+    alphaEst[unk==1] = tmp
     # index=0
     # for j in range(0,h):
     #     for i in range(0,w):
@@ -497,8 +527,12 @@ def knownToUnknownColorMixture(image, trimap, K=1, xyWeight=10):
     unConf = fgCols - bgCols
     unConf = np.sum(unConf * unConf, axis=1) / 3
     conf = np.double(np.logical_or(fg , bg))
-    conf.T[unk.T==1] = unConf
+    conf[unk==1] = unConf
 
+    # alphaEst[trimap < 0.2] = 0
+    # alphaEst[trimap > 0.8] = 1
+    # im = Image.fromarray((alphaEst*255).astype(np.uint8))
+    # im.show()
     return alphaEst, conf
 
 def affinityMatrixToLaplacian(aff):
